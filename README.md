@@ -22,11 +22,32 @@ Explain your design in plain language.
 Some prompts to answer:
 
 - What features does each `Song` use in your system
-  - For example: genre, mood, energy, tempo
-- What information does your `UserProfile` store
-- How does your `Recommender` compute a score for each song
-- How do you choose which songs to recommend
+Genre
+mood
+energy level
+Tempo (beats/min)
+Valence (how positive the song is)
+Danceability (how suitable for dancing based on tempo and beat strength)
+Acousticness (whether it uses physical instruments)
+id, title, artist
 
+- What information does your `UserProfile` store
+Stores favorite genre, favorite mood, target energy level, and whether user likes acoustic or not
+
+- How does your `Recommender` compute a score for each song
+Genre match — exact match gives full points, mismatch gives zero
+Mood match — same as genre, binary match
+Energy proximity — 1 - abs(song.energy - user.target_energy)
+Acousticness — if user.likes_acoustic, reward high acousticness; otherwise reward low
+
+- How do you choose which songs to recommend
+After scoring every song, the selection is purely mechanical — sort by score descending, take the top k:
+
+ranked = sorted(self.songs, key=lambda song: score(song, user), reverse=True)
+return ranked[:k]
+The "choosing" happens entirely in the scoring step. By the time you rank, the scores already encode all the preference logic — genre match, mood match, energy proximity, acousticness. Sorting just surfaces the winners.
+
+The k parameter controls how many results to return. In src/main.py, it's called with k=5, so the user gets their top 5 matches.
 You can include a simple diagram or bullet list if helpful.
 
 ---
