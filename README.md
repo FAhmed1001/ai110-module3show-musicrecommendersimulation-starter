@@ -17,38 +17,103 @@ Replace this paragraph with your own summary of what your version does.
 
 ## How The System Works
 
-Explain your design in plain language.
+### Song Features
 
-Some prompts to answer:
+Each `Song` in the catalog carries ten attributes loaded from `data/songs.csv`:
 
-- What features does each `Song` use in your system
-Genre
-mood
-energy level
-Tempo (beats/min)
-Valence (how positive the song is)
-Danceability (how suitable for dancing based on tempo and beat strength)
-Acousticness (whether it uses physical instruments)
-id, title, artist
+| Attribute | Type | Description |
+|---|---|---|
+| `id`, `title`, `artist` | metadata | Identity fields, not used in scoring |
+| `genre` | string | Musical category (pop, rock, lofi, jazz, etc.) |
+| `mood` | string | Emotional tone (happy, chill, intense, moody, etc.) |
+| `energy` | 0.0 – 1.0 | Overall intensity and activity level |
+| `tempo_bpm` | float | Beats per minute |
+| `valence` | 0.0 – 1.0 | Musical positivity (high = upbeat, low = somber) |
+| `danceability` | 0.0 – 1.0 | How suitable the track is for dancing |
+| `acousticness` | 0.0 – 1.0 | Likelihood of using physical instruments |
 
-- What information does your `UserProfile` store
-Stores favorite genre, favorite mood, target energy level, and whether user likes acoustic or not
+### User Profile
 
-- How does your `Recommender` compute a score for each song
-Genre match — exact match gives full points, mismatch gives zero
-Mood match — same as genre, binary match
-Energy proximity — 1 - abs(song.energy - user.target_energy)
-Acousticness — if user.likes_acoustic, reward high acousticness; otherwise reward low
+A `UserProfile` stores four preference fields:
 
-- How do you choose which songs to recommend
-After scoring every song, the selection is purely mechanical — sort by score descending, take the top k:
+- `favorite_genre` — the genre the user most wants to hear
+- `favorite_mood` — the emotional tone they are looking for
+- `target_energy` — their preferred intensity level (0.0 – 1.0)
+- `likes_acoustic` — whether they prefer acoustic or electronic sounds
 
-ranked = sorted(self.songs, key=lambda song: score(song, user), reverse=True)
-return ranked[:k]
-The "choosing" happens entirely in the scoring step. By the time you rank, the scores already encode all the preference logic — genre match, mood match, energy proximity, acousticness. Sorting just surfaces the winners.
+### Scoring a Song (Strategy A — Genre-First)
 
-The k parameter controls how many results to return. In src/main.py, it's called with k=5, so the user gets their top 5 matches.
-You can include a simple diagram or bullet list if helpful.
+Every song is scored against the user profile using five weighted rules. Scores are summed to produce a total between 0.0 and 1.0:
+
+| Rule | Weight | How it works |
+|---|---|---|
+| Genre match | 0.35 | Full points if `song.genre == user.favorite_genre`, zero otherwise |
+| Mood match | 0.25 | Full points if `song.mood == user.favorite_mood`, zero otherwise |
+| Energy proximity | 0.20 | `0.20 × (1 - \|song.energy - user.target_energy\|)` — closer = higher |
+| Valence proximity | 0.10 | `0.10 × (1 - \|song.valence - user.valence\|)` |
+| Danceability proximity | 0.10 | `0.10 × (1 - \|song.danceability - user.danceability\|)` |
+
+Genre and mood are binary — an exact label match earns full weight or nothing. Energy, valence, and danceability are continuous — every song earns partial credit proportional to how close its value is to the user's target.
+
+### Choosing the Top K Songs
+
+After every song in the catalog is scored, the selection is mechanical:
+
+1. Sort all `(song, score, explanation)` tuples by score descending
+2. Slice the top `k` (default `k=5`)
+
+The "choosing" happens entirely in the scoring step. By the time we rank, the scores already encode all preference logic. Sorting just surfaces the winners.
+
+### Data Flow
+
+```
+User Preferences
+      │
+      ▼
+load_songs("data/songs.csv")  →  list of song dicts
+      │
+      ▼
+FOR each song:
+  _score_song(user_prefs, song)
+    ├─ Genre match?      → +0.35 or +0.00
+    ├─ Mood match?       → +0.25 or +0.00
+    ├─ Energy proximity  → +0.00 to +0.20
+    ├─ Valence proximity → +0.00 to +0.10
+    └─ Danceability      → +0.00 to +0.10
+  returns (score, explanation)
+      │
+      ▼
+Sort all scored songs by score descending
+      │
+      ▼
+Return top K  →  (song, score, explanation) × K
+```
+
+### Algorithm Recipe
+
+A step-by-step description of exactly what the program does each time it runs:
+
+1. **Load** — Read every row from `data/songs.csv` and cast numeric fields (`energy`, `valence`, `danceability`, `tempo_bpm`, `acousticness`) from strings to floats.
+2. **Receive user preferences** — Accept a taste profile with a target genre, mood, energy level, valence, and danceability.
+3. **Score every song** — For each song in the catalog, apply five rules in order and sum the results:
+   - If the song's genre matches the user's preferred genre → add **0.35**
+   - If the song's mood matches the user's preferred mood → add **0.25**
+   - Subtract the absolute energy difference from 1.0, multiply by **0.20** → add the result
+   - Subtract the absolute valence difference from 1.0, multiply by **0.10** → add the result
+   - Subtract the absolute danceability difference from 1.0, multiply by **0.10** → add the result
+4. **Build an explanation** — While scoring, record which rules fired so the output can say *why* a song was recommended.
+5. **Rank** — Sort all scored songs from highest to lowest score.
+6. **Return top K** — Slice the sorted list and return the top `k` results (default 5) as `(song, score, explanation)` tuples.
+
+### Potential Biases
+
+| Bias | Why it happens | What it means in practice |
+|---|---|---|
+| **Genre over-prioritization** | Genre carries 35% of the total score — the single largest weight | A great mood + energy match in the wrong genre can never outscore a mediocre same-genre song. A jazz fan set to `pop` will never see jazz tracks no matter how perfectly they fit. |
+| **Mood rigidity** | Mood is binary (match or no match), worth 25% | Two songs can be sonically identical but one gets 0.25 extra simply because its mood label matches. Labels like "chill" vs. "relaxed" are treated as completely different. |
+| **Numeric defaults favor the middle** | Valence and danceability default to `0.5` in the OOP path when not supplied | Songs near the middle of those scales get artificially boosted for users whose real preference may be at either extreme. |
+| **Small, homogeneous catalog** | The CSV has ~20 songs with a limited spread of genres and moods | Some genres (e.g., ambient, jazz) have very few entries, so users who prefer them consistently get lower-scoring results — not because the algorithm is wrong, but because there is nothing better to find. |
+| **No diversity enforcement** | Top-K is a pure score sort | The system can return five nearly identical songs if they all share the user's genre and mood. There is no mechanism to surface variety. |
 
 ---
 
@@ -160,6 +225,62 @@ Describe your scoring logic in plain language.
 - How does it turn those into a number
 
 Try to avoid code in this section, treat it like an explanation to a non programmer.
+
+┌─────────────────────────────────────────────────────┐
+│  INPUT: User Preferences (taste_profile dict)        │
+│                                                      │
+│   genre="pop"   mood="happy"   energy=0.8            │
+│   valence=0.8   danceability=0.75                    │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  LOAD: load_songs("data/songs.csv")                  │
+│                                                      │
+│  CSV rows → list of song dicts                       │
+│  (strings cast to floats for numeric fields)         │
+└────────────────────┬────────────────────────────────┘
+                     │  ~20 songs
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  PROCESS: The Loop  (inside recommend_songs)         │
+│                                                      │
+│  FOR each song in songs:                             │
+│  │                                                   │
+│  │  _score_song(user_prefs, song)                    │
+│  │                                                   │
+│  │  ┌──────────────────────────────────┐             │
+│  │  │  Genre match?   → +0.35 or +0.0  │             │
+│  │  │  Mood match?    → +0.25 or +0.0  │             │
+│  │  │  Energy gap     → +0.0 to +0.20  │             │
+│  │  │  Valence gap    → +0.0 to +0.10  │             │
+│  │  │  Danceability   → +0.0 to +0.10  │             │
+│  │  └──────────────┬───────────────────┘             │
+│  │                 │                                  │
+│  └── (song, score, explanation)  ──────────────────► │
+│                                                      │
+│  Result: list of all scored songs                    │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  RANK: sort by score descending → slice [:k]         │
+│                                                      │
+│  #1  Sunrise City    0.99  ← genre + mood + energy   │
+│  #2  Gym Hero        0.71  ← genre + energy          │
+│  #3  Rooftop Lights  0.63  ← mood + energy           │
+│  #4  ...                                             │
+│  #5  ...                                             │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  OUTPUT: Top K (song, score, explanation) tuples     │
+│                                                      │
+│  Printed in main.py:                                 │
+│  "Sunrise City - Score: 0.99"                        │
+│  "Because: matches genre (pop), mood (happy)..."     │
+└─────────────────────────────────────────────────────┘
 
 ---
 
